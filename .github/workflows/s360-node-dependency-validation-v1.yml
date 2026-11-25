@@ -1,0 +1,60 @@
+name: Node dependency validation v1
+
+on:
+  push:
+    branches: [users/hubouvie/s360-node-hosted-validation-v1]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: huguesBouvier/azure-iot-sdk-node
+          ref: 7490330799fd8ce1d216bea91d6e9cbbc3f67fc2
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Resolve the existing public workspace
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Verify every affected dependency resolves above its fixed boundary
+        run: |
+          node <<'JS'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
+          const minima = {'smol-toml': [1, 7, 1], 'follow-redirects': [1, 16, 2]};
+          const versions = {};
+          for (const [name, minimum] of Object.entries(minima)) {
+            versions[name] = Object.entries(lock.packages)
+              .filter(([path]) => path.split('node_modules/').at(-1) === name)
+              .map(([, entry]) => entry.version);
+            assert.ok(versions[name].length > 0, name + ' must be verified in the resolved graph');
+            for (const version of versions[name]) {
+              const parts = version.match(/^(\d+)\.(\d+)\.(\d+)$/);
+              assert.ok(parts, name + ' must resolve to a stable version');
+              const [, major, minor, patch] = parts.map(Number);
+              assert.ok(major === minimum[0] &&
+                (minor > minimum[1] || (minor === minimum[1] && patch >= minimum[2])),
+                name + ' resolved below its fixed boundary: ' + version);
+            }
+          }
+          fs.writeFileSync('dependency-versions-v1.json', JSON.stringify({
+            sourceCommit: '7490330799fd8ce1d216bea91d6e9cbbc3f67fc2',
+            versions, passed: true
+          }, null, 2) + '\n');
+          console.log(JSON.stringify(versions));
+          JS
+      - name: Run existing common and HTTP lint, build and mock unit checks
+        run: npm run ci --workspace common/core --workspace common/transport/http
+      - uses: actions/upload-artifact@v4
+        with:
+          name: node-dependency-validation-v1
+          path: |
+            package-lock.json
+            dependency-versions-v1.json
